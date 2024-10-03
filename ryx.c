@@ -6,11 +6,12 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/types.h>
 #include <termios.h>
 #include <unistd.h>
 
 /*** defines ***/
-#define RYX_VERSION "0.0.2"
+#define RYX_VERSION "0.0.3"
 
 #define CTRL_KEY(k) ((k) & 0x1f)
 
@@ -19,6 +20,7 @@ enum editorKey {
     ARROW_RIGHT,
     ARROW_UP,
     ARROW_DOWN,
+    DEL_KEY,
     HOME_KEY,
     END_KEY,
     PAGE_UP,
@@ -26,16 +28,30 @@ enum editorKey {
 };
 
 /*** data ***/
+
+//erow = EDITOR ROW, text as a pointer
+typedef struct erow {
+    int size;
+    char *chars;
+} erow;
+
+//Visual Variables and Configs
 struct editorConfig {
     int cx, cy;
     int screenrows;
     int screencols;
+
+    int numrows;
+    erow row;
+
     struct termios orig_termios;
 };
 
 struct editorConfig E;
 
 /*** terminal ***/
+
+//Crash Print Error
 void die(const char *s) {
     write(STDOUT_FILENO, "\x1b[2J", 4);
     write(STDOUT_FILENO, "\x1b[H", 3);
@@ -44,10 +60,12 @@ void die(const char *s) {
     exit(1);
 }
 
+//On exit return to normal
 void disableRawMode() {
     if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &E.orig_termios) == -1) die("tcsetattr");
 }
 
+//On enter change terminal usage
 void enableRawMode() {
     if (tcgetattr(STDIN_FILENO, &E.orig_termios) == -1) die("tcgetattr");
     atexit(disableRawMode);
@@ -65,6 +83,8 @@ void enableRawMode() {
     // tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw);
 }
 
+
+//read raw key data and send them
 int editorReadKey() {
     int nread;
     char c;
@@ -72,6 +92,7 @@ int editorReadKey() {
         if (nread == -1 && errno != EAGAIN) die("read");
     }
 
+    //checks if its an escape char
     if ( c == '\x1b') {
         char seq[3];
 
@@ -84,6 +105,7 @@ int editorReadKey() {
                 if (seq[2] == '~') {
                     switch (seq[1]) {
                         case '1': return HOME_KEY;
+                        case '3': return DEL_KEY;
                         case '4': return END_KEY;
                         case '5': return PAGE_UP;
                         case '6': return PAGE_DOWN;
@@ -132,9 +154,12 @@ int getCursorPosition(int *rows, int *cols) {
     return 0;
 }
 
+//gets size of terminal
 int getWindowSize(int *rows, int *cols) {
     struct winsize ws;
 
+
+//resizes terminal
 if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == -1 || ws.ws_col == 0) {
       if (write(STDOUT_FILENO, "\x1b[999C\x1b[999B", 12) != 12) return -1;
       return getCursorPosition(rows, cols);
@@ -145,6 +170,11 @@ if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == -1 || ws.ws_col == 0) {
     }
 }
 
+/*** file io ***/
+
+//basic file input/output
+
+
 /*** append buffer ***/
 struct abuf {
     char *b;
@@ -153,6 +183,7 @@ struct abuf {
 
 #define ABUF_INIT {NULL, 0}
 
+//better print
 void abAppend(struct abuf *ab, const char *s, int len) {
     char *new = realloc(ab->b, ab->len + len);
 
@@ -162,21 +193,26 @@ void abAppend(struct abuf *ab, const char *s, int len) {
     ab->len += len;
 }
 
+//free the buffer
 void abFree(struct abuf *ab) {
     free(ab->b);
 }
 
 /*** output ***/
+
+//draw the rows on the screen
 void editorDrawRows(struct abuf *ab) {
     int y;
     for (y=0; y < E.screenrows; y++) {
 
+        //print welcome message
         if (y == E.screenrows / 3) {
             char welcome[80];
             int welcomelen = snprintf(welcome, sizeof(welcome),
                 "by royex -- ryx editor -- version %s", RYX_VERSION);
             if (welcomelen > E.screencols) welcomelen = E.screencols;
 
+            //center the text
             int padding = (E.screencols - welcomelen) / 2;
             if (padding) {
                 abAppend(ab, "~", 1);
@@ -195,6 +231,7 @@ void editorDrawRows(struct abuf *ab) {
     }
 }
 
+//refresh screen every buffer
 void editorRefreshScreen() {
     struct abuf ab = ABUF_INIT;
 
@@ -214,6 +251,8 @@ void editorRefreshScreen() {
 }
 
 /*** input ***/
+
+//move the cursor with information sent by editorReadKey()
 void editorMoveCursor(int key) {
     switch (key) {
         case ARROW_LEFT:
@@ -230,7 +269,7 @@ void editorMoveCursor(int key) {
             break;
     }
 }
-
+//process key presses sent by editorReadKey()
 void editorProcessKeypress() {
     int c = editorReadKey();
 
@@ -268,13 +307,17 @@ void editorProcessKeypress() {
 }
 
 /*** init ***/
+
+//initilize the terminal screen, crash if terminal size < 0
 void initEditor() {
     E.cx = 0;
     E.cy = 0;
+    E.numrows = 0;
 
     if (getWindowSize(&E.screenrows, &E.screencols) == -1) die("getWindowSize");
 }
 
+//initilize the program (keep it as small as possible)
 int main() {
     enableRawMode();
     initEditor();
